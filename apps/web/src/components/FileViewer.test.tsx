@@ -419,6 +419,44 @@ describe('parseInspectOverridesFromSource', () => {
       `</style>`;
     expect(parseInspectOverridesFromSource(hostile)).toEqual({});
   });
+
+  it('ignores override-shaped text inside raw-text elements and HTML comments', () => {
+    // A template literal in a <script>, a CSS comment in a sibling <style>, the
+    // body of a <textarea> / <title>, and an HTML comment all contain text that
+    // would match the override block regex. None of them are real persisted
+    // overrides, so the host map must stay empty — otherwise useEffect would
+    // seed phantom rules and a later Save-to-source would write CSS the user
+    // never created.
+    const phantomBlock =
+      `<style data-od-inspect-overrides>` +
+      `[data-od-id="hero"] { color: #ff0000 !important }` +
+      `</style>`;
+    const source =
+      `<!doctype html><html><head>` +
+      `<script>const tmpl = \`${phantomBlock}\`;</script>` +
+      `<style>/* docs: ${phantomBlock} */</style>` +
+      `<title>${phantomBlock}</title>` +
+      `<!-- ${phantomBlock} -->` +
+      `</head><body><textarea>${phantomBlock}</textarea></body></html>`;
+    expect(parseInspectOverridesFromSource(source)).toEqual({});
+  });
+
+  it('still parses a real override block when raw-text literals also mention one', () => {
+    const phantomBlock =
+      `<style data-od-inspect-overrides>` +
+      `[data-od-id="phantom"] { color: #ff0000 !important }` +
+      `</style>`;
+    const source =
+      `<!doctype html><html><head>` +
+      `<script>const tmpl = \`${phantomBlock}\`;</script>` +
+      `<style data-od-inspect-overrides>` +
+      `[data-od-id="hero"] { color: #00ff00 !important }` +
+      `</style>` +
+      `</head><body></body></html>`;
+    const map = parseInspectOverridesFromSource(source);
+    expect(Object.keys(map)).toEqual(['hero']);
+    expect(map.hero?.props).toEqual({ color: '#00ff00' });
+  });
 });
 
 describe('updateInspectOverride', () => {

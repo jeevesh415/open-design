@@ -645,13 +645,17 @@ export function updateInspectOverride(
 // Mirrors the iframe bridge's hydrateOverridesFromDom: same allow-list,
 // same value sanitizer, same selector kinds, so what the iframe applies and
 // what the host persists stay in lock-step. Pure string transform; no DOM.
+//
+// HTML-aware: enumerates `<style data-od-inspect-overrides>` elements via
+// the same walker used by the splicer, so a `<style data-od-inspect-overrides>`
+// literal living inside a `<script>`, `<style>` (e.g. CSS comment), `<textarea>`,
+// `<title>`, or HTML comment is not mistaken for a real override block. Without
+// that exclusion, useEffect would seed the host map from forged/quoted text and
+// a later Save-to-source would persist phantom CSS the user never created.
 export function parseInspectOverridesFromSource(source: string): InspectOverrideMap {
   const map: InspectOverrideMap = {};
   if (!source) return map;
-  const blockRe = /<style[^>]*data-od-inspect-overrides[^>]*>([\s\S]*?)<\/style>/gi;
-  let blockMatch: RegExpExecArray | null;
-  while ((blockMatch = blockRe.exec(source)) !== null) {
-    const body = blockMatch[1] ?? '';
+  for (const body of stripInspectOverridesAndIndex(source).bodies) {
     const ruleRe = /(\[data-(?:od-id|screen-label)="([^"]*)"\])\s*\{\s*([^}]*)\}/g;
     let ruleMatch: RegExpExecArray | null;
     while ((ruleMatch = ruleRe.exec(body)) !== null) {
@@ -713,6 +717,11 @@ type InspectSpliceScan = {
   headOpenEnd: number;
   // Position in `out` at the first top-level `</head>` close tag, or -1.
   headCloseStart: number;
+  // Raw inner-text of every real `<style data-od-inspect-overrides>` element
+  // discovered during the walk, in source order. Excludes occurrences inside
+  // raw-text element contents and HTML comments. Hydration parses these
+  // bodies for the host map; the splicer ignores them.
+  bodies: string[];
 };
 
 // Walk `source` and produce a copy with every existing
@@ -724,6 +733,7 @@ type InspectSpliceScan = {
 // transform — no DOM dependency, safe to run during SSR/tests.
 function stripInspectOverridesAndIndex(source: string): InspectSpliceScan {
   const parts: string[] = [];
+  const bodies: string[] = [];
   let outLen = 0;
   let headOpenEnd = -1;
   let headCloseStart = -1;
@@ -793,6 +803,7 @@ function stripInspectOverridesAndIndex(source: string): InspectSpliceScan {
         i = source.length;
         continue;
       }
+      bodies.push(source.slice(tagEnd + 1, closeStart));
       const closeEnd = source.indexOf('>', closeStart);
       let stop = closeEnd < 0 ? source.length : closeEnd + 1;
       while (stop < source.length && /\s/.test(source.charAt(stop))) stop++;
@@ -817,7 +828,7 @@ function stripInspectOverridesAndIndex(source: string): InspectSpliceScan {
     emit(tagText);
     i = tagEnd + 1;
   }
-  return { out: parts.join(''), headOpenEnd, headCloseStart };
+  return { out: parts.join(''), headOpenEnd, headCloseStart, bodies };
 }
 
 // Splice (or remove) the inspect overrides <style> block in an HTML
