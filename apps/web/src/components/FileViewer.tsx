@@ -333,6 +333,15 @@ function InspectPanel({
   const radius = value('border-radius', String(initialRadius));
   const textAlign = value('text-align', target.style.textAlign || 'left');
   const fontWeight = value('font-weight', target.style.fontWeight || '400');
+  // Parse once: `pxToNumber(...) || initial...` would treat a legitimate
+  // `0px` draft as missing and snap the slider back to the original
+  // computed value, making it impossible to remove padding/radius from an
+  // element whose initial value is nonzero. `pxToNumber` already returns
+  // 0 for unparseable input, so its result is safe to consume directly
+  // and zero is preserved.
+  const paddingNum = pxToNumber(padding);
+  const fontSizeNum = pxToNumber(fontSize);
+  const radiusNum = pxToNumber(radius);
 
   const justSaved = savedAt && Date.now() - savedAt < 4000;
 
@@ -395,10 +404,10 @@ function InspectPanel({
             min={8}
             max={160}
             step={1}
-            value={clamp(pxToNumber(fontSize) || initialFontSize, 8, 160)}
+            value={clamp(fontSizeNum, 8, 160)}
             onChange={(e) => setVal('font-size', `${e.target.value}px`)}
           />
-          <span className="inspect-row-value">{Math.round(pxToNumber(fontSize) || initialFontSize)}px</span>
+          <span className="inspect-row-value">{Math.round(fontSizeNum)}px</span>
         </div>
         <div className="inspect-row">
           <label htmlFor="ip-fw">Weight</label>
@@ -437,10 +446,10 @@ function InspectPanel({
             min={0}
             max={120}
             step={1}
-            value={clamp(pxToNumber(padding) || initialPadding, 0, 120)}
+            value={clamp(paddingNum, 0, 120)}
             onChange={(e) => setVal('padding', `${e.target.value}px`)}
           />
-          <span className="inspect-row-value">{Math.round(pxToNumber(padding) || initialPadding)}px</span>
+          <span className="inspect-row-value">{Math.round(paddingNum)}px</span>
         </div>
         <div className="inspect-row">
           <label htmlFor="ip-rad">Radius</label>
@@ -451,10 +460,10 @@ function InspectPanel({
             min={0}
             max={120}
             step={1}
-            value={clamp(pxToNumber(radius) || initialRadius, 0, 120)}
+            value={clamp(radiusNum, 0, 120)}
             onChange={(e) => setVal('border-radius', `${e.target.value}px`)}
           />
-          <span className="inspect-row-value">{Math.round(pxToNumber(radius) || initialRadius)}px</span>
+          <span className="inspect-row-value">{Math.round(radiusNum)}px</span>
         </div>
       </section>
 
@@ -1194,6 +1203,42 @@ function HtmlViewer({
     win.postMessage({ type: 'od:inspect-reset', elementId }, '*');
   }
 
+  // Pull the iframe's authoritative override CSS by sending od:inspect-extract
+  // and awaiting the next od:inspect-overrides reply. Used at save time so
+  // an artifact opened with persisted overrides — but never mutated in this
+  // session — does not splice an empty body that strips the saved block.
+  // Falls back to the cached `inspectOverridesCss` if the iframe never replies.
+  function extractInspectCss(timeoutMs = 750): Promise<string> {
+    return new Promise((resolve) => {
+      const win = iframeRef.current?.contentWindow;
+      if (!win) {
+        resolve(inspectOverridesCss);
+        return;
+      }
+      let settled = false;
+      function finish(value: string) {
+        if (settled) return;
+        settled = true;
+        window.removeEventListener('message', onMessage);
+        window.clearTimeout(timer);
+        resolve(value);
+      }
+      function onMessage(ev: MessageEvent) {
+        if (ev.source !== iframeRef.current?.contentWindow) return;
+        const data = ev.data as { type?: string; css?: string } | null;
+        if (!data || data.type !== 'od:inspect-overrides') return;
+        finish(typeof data.css === 'string' ? data.css : '');
+      }
+      window.addEventListener('message', onMessage);
+      const timer = window.setTimeout(() => finish(inspectOverridesCss), timeoutMs);
+      try {
+        win.postMessage({ type: 'od:inspect-extract' }, '*');
+      } catch {
+        finish(inspectOverridesCss);
+      }
+    });
+  }
+
   // Persist accumulated inspect overrides into the artifact source: replace
   // (or insert) a single <style data-od-inspect-overrides> block in <head>.
   // The CSS body comes from the iframe — it's the same string the live
@@ -1205,7 +1250,9 @@ function HtmlViewer({
     setSavingInspect(true);
     setInspectError(null);
     try {
-      const css = inspectOverridesCss.trim();
+      const fresh = await extractInspectCss();
+      if (typeof fresh === 'string') setInspectOverridesCss(fresh);
+      const css = (fresh ?? inspectOverridesCss).trim();
       const next = applyInspectOverridesToSource(source, css);
       const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files`, {
         method: 'POST',

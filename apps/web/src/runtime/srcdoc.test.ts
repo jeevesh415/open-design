@@ -88,6 +88,10 @@ describe('buildSrcdoc', () => {
     expect(srcdoc).toContain('function hydrateOverridesFromDom()');
     expect(srcdoc).toContain('hydrateOverridesFromDom();');
     expect(srcdoc).toContain("document.querySelector('style[data-od-inspect-overrides]')");
+    // After hydration, the bridge must seed the host's overrides state so a
+    // Save-to-source before the user has touched any control does not splice
+    // an empty CSS body that erases the persisted style block.
+    expect(srcdoc).toContain('if (Object.keys(overrides).length) setTimeout(postOverrides, 0);');
   });
 
   it('reflects the requested initial bridge modes on the documentElement attributes', () => {
